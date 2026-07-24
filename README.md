@@ -95,11 +95,11 @@ First, create a `mocks.json` file. Each tool name maps to either a `"result"` (s
 
 ```json
 {
-  "weather": { 
-    "result": { "temperature": 29 } 
+  "lookup_user": { 
+    "result": { "status": "active", "roles": ["admin"] } 
   },
-  "send_sms": { 
-    "error": "service unavailable: connection refused" 
+  "stripe_api_call": { 
+    "error": "HTTP 429 Too Many Requests" 
   }
 }
 ```
@@ -112,10 +112,12 @@ tooltrace replay --mock mocks.json trace.jsonl
 
 **Output:**
 ```text
-[PASS] step 0 — weather
-[PASS] step 1 — send_sms
+[PASS] step 0 — lookup_user
+[PASS] step 1 — execute_sql_query
+[PASS] step 2 — stripe_api_call
+[PASS] step 3 — send_slack_alert
 
-2 passed, 0 failed
+4 passed, 0 failed
 ```
 *A step passes if the recorded outcome (success or failure) matches the outcome provided by your mock registry.*
 
