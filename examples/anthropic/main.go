@@ -1,109 +1,88 @@
-// Package main demonstrates tooltrace library usage with an Anthropic-style
-// tool-calling loop (Claude tool use). No live LLM connection is required —
-// tool call boundaries and responses are simulated inline.
 package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/ToolTraceHQ/tooltrace/pkg/trace"
 )
 
+// This example simulates an Anthropic Claude Computer Use / Bash execution loop.
+// It generates an in-depth trace file (anthropic_example.jsonl) and a corresponding mocks file.
 func main() {
 	tracePath := "anthropic_example.jsonl"
-	sessionID := "sess_anthropic_example_01"
+	sessionID := "sess_claude_sysadmin_02"
+
+	os.Remove(tracePath)
 
 	w, err := trace.NewWriter(tracePath, sessionID)
 	if err != nil {
-		log.Fatalf("failed to open trace writer: %v", err)
+		log.Fatalf("Failed to open trace writer: %v", err)
 	}
-	defer func() {
-		if err := w.Close(); err != nil {
-			log.Printf("warning: close writer: %v", err)
-		}
-	}()
+	defer w.Close()
 
-	fmt.Printf("Recording trace to %s ...\n\n", tracePath)
+	fmt.Printf("Recording deep trace to %s ...\n\n", tracePath)
 
-	// --- Simulated tool call 1: read_file (success) ---
-	readArgs := mustMarshal(map[string]string{"path": "/etc/hosts"})
-	if err := trace.Record(w, "read_file", readArgs, func() (json.RawMessage, error) {
-		return mustMarshal(map[string]interface{}{
-			"content": "127.0.0.1 localhost\n::1 localhost\n",
-			"size":    36,
-		}), nil
-	}); err != nil {
-		log.Fatalf("record read_file: %v", err)
-	}
-	fmt.Println("[recorded] read_file — success")
-
-	// --- Simulated tool call 2: run_bash (success) ---
-	bashArgs := mustMarshal(map[string]string{"command": "echo hello"})
-	if err := trace.Record(w, "run_bash", bashArgs, func() (json.RawMessage, error) {
-		return mustMarshal(map[string]interface{}{
-			"stdout":    "hello\n",
-			"exit_code": 0,
-		}), nil
-	}); err != nil {
-		log.Fatalf("record run_bash: %v", err)
-	}
-	fmt.Println("[recorded] run_bash — success")
-
-	// --- Simulated tool call 3: write_file (failure) ---
-	writeArgs := mustMarshal(map[string]interface{}{
-		"path":    "/etc/shadow",
-		"content": "malicious",
+	// Step 1: Read system logs
+	args1 := json.RawMessage(`{"command": "cat /var/log/syslog | tail -n 5"}`)
+	err = trace.Record(w, "bash_execute", args1, func() (json.RawMessage, error) {
+		time.Sleep(60 * time.Millisecond)
+		return json.RawMessage(`{
+			"stdout": "Jul 24 10:12:00 server sshd[123]: Accepted publickey for root\nJul 24 10:12:01 server systemd[1]: Started Session 4 of user root.",
+			"stderr": "",
+			"exit_code": 0
+		}`), nil
 	})
-	if err := trace.Record(w, "write_file", writeArgs, func() (json.RawMessage, error) {
-		return nil, errors.New("permission denied: /etc/shadow")
-	}); err != nil {
-		log.Fatalf("record write_file: %v", err)
-	}
-	fmt.Println("[recorded] write_file — failure (expected)")
+	printStatus("bash_execute", err)
+
+	// Step 2: Attempt to restart a failing service (failure)
+	args2 := json.RawMessage(`{"command": "systemctl restart postgresql"}`)
+	err = trace.Record(w, "bash_execute", args2, func() (json.RawMessage, error) {
+		time.Sleep(300 * time.Millisecond)
+		return nil, fmt.Errorf("Job for postgresql.service failed because the control process exited with error code.")
+	})
+	printStatus("bash_execute", err)
+
+	// Step 3: Check disk space
+	args3 := json.RawMessage(`{"command": "df -h /var/lib/postgresql"}`)
+	err = trace.Record(w, "bash_execute", args3, func() (json.RawMessage, error) {
+		time.Sleep(40 * time.Millisecond)
+		return json.RawMessage(`{
+			"stdout": "Filesystem      Size  Used Avail Use% Mounted on\n/dev/sda1        50G   50G     0 100% /",
+			"stderr": "",
+			"exit_code": 0
+		}`), nil
+	})
+	printStatus("bash_execute", err)
 
 	fmt.Printf("\nDone. Trace written to %s\n", tracePath)
-	fmt.Println("Replay with:")
-	fmt.Printf("  tooltrace replay --mock examples/anthropic/mocks.json %s\n", tracePath)
-
+	
 	writeMocksFile()
 }
 
-func writeMocksFile() {
-	mocks := map[string]interface{}{
-		"read_file": map[string]interface{}{
-			"result": map[string]interface{}{
-				"content": "127.0.0.1 localhost\n",
-				"size":    36,
-			},
-		},
-		"run_bash": map[string]interface{}{
-			"result": map[string]interface{}{
-				"stdout": "hello\n", "exit_code": 0,
-			},
-		},
-		"write_file": map[string]interface{}{
-			"error": "permission denied: /etc/shadow",
-		},
-	}
-
-	data, err := json.MarshalIndent(mocks, "", "  ")
+func printStatus(tool string, err error) {
 	if err != nil {
-		log.Fatalf("marshal mocks: %v", err)
+		fmt.Printf("[recorded] %s — failure (expected)\n", tool)
+	} else {
+		fmt.Printf("[recorded] %s — success\n", tool)
 	}
-	if err := os.WriteFile("mocks.json", data, 0o644); err != nil {
-		log.Fatalf("write mocks.json: %v", err)
-	}
-	fmt.Println("Mock file written to mocks.json")
 }
 
-func mustMarshal(v interface{}) json.RawMessage {
-	b, err := json.Marshal(v)
-	if err != nil {
-		panic(fmt.Sprintf("mustMarshal: %v", err))
+func writeMocksFile() {
+	data := []byte(`{
+  "bash_execute": {
+    "result": {
+      "stdout": "Filesystem      Size  Used Avail Use% Mounted on\n/dev/sda1        50G   50G     0 100% /",
+      "stderr": "",
+      "exit_code": 0
+    }
+  }
+}`)
+	// We'll write to a different mock file for Anthropic so they don't overwrite each other if run sequentially in root
+	if err := os.WriteFile("anthropic_mocks.json", data, 0o644); err != nil {
+		fmt.Printf("failed to write mocks file: %v\n", err)
 	}
-	return b
 }

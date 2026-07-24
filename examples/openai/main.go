@@ -1,113 +1,118 @@
-// Package main demonstrates tooltrace library usage with an OpenAI-compatible
-// tool-calling loop. No live LLM connection is required — tool call boundaries
-// and responses are simulated inline to show exactly how Record() is used in a
-// real agent loop.
 package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/ToolTraceHQ/tooltrace/pkg/trace"
 )
 
+// This example simulates a complex, multi-step OpenAI function calling loop.
+// It generates an in-depth trace file (openai_example.jsonl) and a corresponding mocks file.
 func main() {
-	// Write trace to a file in the current directory.
 	tracePath := "openai_example.jsonl"
-	sessionID := "sess_openai_example_01"
+	sessionID := "sess_openai_prod_994"
+
+	// Remove previous trace if it exists so we start fresh
+	os.Remove(tracePath)
 
 	w, err := trace.NewWriter(tracePath, sessionID)
 	if err != nil {
-		log.Fatalf("failed to open trace writer: %v", err)
+		log.Fatalf("Failed to open trace writer: %v", err)
 	}
-	defer func() {
-		if err := w.Close(); err != nil {
-			log.Printf("warning: close writer: %v", err)
-		}
-	}()
+	defer w.Close()
 
-	fmt.Printf("Recording trace to %s ...\n\n", tracePath)
+	fmt.Printf("Recording deep trace to %s ...\n\n", tracePath)
 
-	// --- Simulated tool call 1: get_weather (success) ---
-	weatherArgs := mustMarshal(map[string]string{"city": "Lagos"})
-	if err := trace.Record(w, "get_weather", weatherArgs, func() (json.RawMessage, error) {
-		// Simulate a successful weather API response.
-		return mustMarshal(map[string]interface{}{
-			"city":        "Lagos",
-			"temperature": 29,
-			"unit":        "celsius",
-			"condition":   "partly cloudy",
-		}), nil
-	}); err != nil {
-		log.Fatalf("record get_weather: %v", err)
-	}
-	fmt.Println("[recorded] get_weather — success")
+	// Step 1: User lookup (success)
+	args1 := json.RawMessage(`{"email": "admin@example.com", "include_metadata": true}`)
+	err = trace.Record(w, "lookup_user", args1, func() (json.RawMessage, error) {
+		time.Sleep(45 * time.Millisecond) // simulate latency
+		return json.RawMessage(`{
+			"user_id": "usr_99812",
+			"status": "active",
+			"roles": ["admin", "billing_manager"],
+			"metadata": {"last_login": "2026-07-24T10:00:00Z", "mfa_enabled": true}
+		}`), nil
+	})
+	printStatus("lookup_user", err)
 
-	// --- Simulated tool call 2: web_search (success) ---
-	searchArgs := mustMarshal(map[string]string{"query": "golang tooltrace library"})
-	if err := trace.Record(w, "web_search", searchArgs, func() (json.RawMessage, error) {
-		return mustMarshal(map[string]interface{}{
-			"results": []map[string]string{
-				{"title": "tooltrace GitHub", "url": "https://github.com/ToolTraceHQ/tooltrace"},
-			},
-		}), nil
-	}); err != nil {
-		log.Fatalf("record web_search: %v", err)
-	}
-	fmt.Println("[recorded] web_search — success")
+	// Step 2: Database query (success, complex nested data)
+	args2 := json.RawMessage(`{"query": "SELECT * FROM billing_events WHERE user_id = 'usr_99812' ORDER BY created_at DESC LIMIT 2"}`)
+	err = trace.Record(w, "execute_sql_query", args2, func() (json.RawMessage, error) {
+		time.Sleep(120 * time.Millisecond)
+		return json.RawMessage(`{
+			"rows_returned": 2,
+			"columns": ["id", "amount", "status"],
+			"data": [
+				{"id": "evt_1", "amount": 49.99, "status": "paid"},
+				{"id": "evt_2", "amount": 12.00, "status": "refunded"}
+			]
+		}`), nil
+	})
+	printStatus("execute_sql_query", err)
 
-	// --- Simulated tool call 3: send_notification (failure) ---
-	notifyArgs := mustMarshal(map[string]string{"message": "Build complete", "channel": "slack"})
-	if err := trace.Record(w, "send_notification", notifyArgs, func() (json.RawMessage, error) {
-		// Simulate a downstream service failure.
-		return nil, errors.New("notification service unavailable: connection refused")
-	}); err != nil {
-		log.Fatalf("record send_notification: %v", err)
-	}
-	fmt.Println("[recorded] send_notification — failure (expected)")
+	// Step 3: Trigger external API (failure - rate limit)
+	args3 := json.RawMessage(`{"action": "issue_refund", "event_id": "evt_1", "reason": "customer_request"}`)
+	err = trace.Record(w, "stripe_api_call", args3, func() (json.RawMessage, error) {
+		time.Sleep(80 * time.Millisecond)
+		return nil, fmt.Errorf("HTTP 429 Too Many Requests: Stripe API rate limit exceeded")
+	})
+	printStatus("stripe_api_call", err)
+
+	// Step 4: Fallback notification (success)
+	args4 := json.RawMessage(`{"channel": "#billing-alerts", "severity": "high", "message": "Failed to refund evt_1 due to rate limit."}`)
+	err = trace.Record(w, "send_slack_alert", args4, func() (json.RawMessage, error) {
+		time.Sleep(25 * time.Millisecond)
+		return json.RawMessage(`{"delivered": true, "timestamp": "1690000000"}`), nil
+	})
+	printStatus("send_slack_alert", err)
 
 	fmt.Printf("\nDone. Trace written to %s\n", tracePath)
-	fmt.Println("Replay with:")
-	fmt.Printf("  tooltrace replay --mock examples/openai/mocks.json %s\n", tracePath)
-
-	// Write a matching mocks.json alongside this example for easy replay.
+	
+	// Write a matching mocks.json for this complex trace
 	writeMocksFile()
 }
 
-func writeMocksFile() {
-	mocks := map[string]interface{}{
-		"get_weather": map[string]interface{}{
-			"result": map[string]interface{}{
-				"city": "Lagos", "temperature": 29, "unit": "celsius",
-			},
-		},
-		"web_search": map[string]interface{}{
-			"result": map[string]interface{}{
-				"results": []interface{}{},
-			},
-		},
-		"send_notification": map[string]interface{}{
-			"error": "notification service unavailable: connection refused",
-		},
-	}
-
-	data, err := json.MarshalIndent(mocks, "", "  ")
+func printStatus(tool string, err error) {
 	if err != nil {
-		log.Fatalf("marshal mocks: %v", err)
+		fmt.Printf("[recorded] %s — failure (expected)\n", tool)
+	} else {
+		fmt.Printf("[recorded] %s — success\n", tool)
 	}
-	if err := os.WriteFile("mocks.json", data, 0o644); err != nil {
-		log.Fatalf("write mocks.json: %v", err)
-	}
-	fmt.Println("Mock file written to mocks.json")
 }
 
-func mustMarshal(v interface{}) json.RawMessage {
-	b, err := json.Marshal(v)
-	if err != nil {
-		panic(fmt.Sprintf("mustMarshal: %v", err))
+func writeMocksFile() {
+	data := []byte(`{
+  "lookup_user": {
+    "result": {
+      "user_id": "usr_99812",
+      "status": "active",
+      "roles": ["admin", "billing_manager"],
+      "metadata": {"last_login": "2026-07-24T10:00:00Z", "mfa_enabled": true}
+    }
+  },
+  "execute_sql_query": {
+    "result": {
+      "rows_returned": 2,
+      "columns": ["id", "amount", "status"],
+      "data": [
+        {"id": "evt_1", "amount": 49.99, "status": "paid"},
+        {"id": "evt_2", "amount": 12.00, "status": "refunded"}
+      ]
+    }
+  },
+  "stripe_api_call": {
+    "error": "HTTP 429 Too Many Requests: Stripe API rate limit exceeded"
+  },
+  "send_slack_alert": {
+    "result": {"delivered": true, "timestamp": "1690000000"}
+  }
+}`)
+	if err := os.WriteFile("mocks.json", data, 0o644); err != nil {
+		fmt.Printf("failed to write mocks file: %v\n", err)
 	}
-	return b
 }
