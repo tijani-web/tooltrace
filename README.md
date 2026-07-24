@@ -143,6 +143,10 @@ Currently, only **v1** (Record + Replay) is implemented. Advanced features like 
 
 We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to run the test suite, format your code, and submit bug reports.
 
+## Author
+
+Created and maintained by [@tijani-web](https://github.com/tijani-web).
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
